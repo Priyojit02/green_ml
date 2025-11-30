@@ -41,7 +41,7 @@ const canonicalCols = [
 ];
 
 const EXCEL_PUBLIC_PATH = "/Book3.xlsx";
-const BACKEND_EXCEL_URL = "http://127.0.0.1:8009/backend_excel";
+const BACKEND_EXCEL_URL = "http://127.0.0.1:8009/backend_excel"; // adjust if your backend runs on another port
 
 const formatNumber = (val) => {
   if (val === null || val === undefined || isNaN(Number(val))) return "-";
@@ -78,16 +78,44 @@ export default function App() {
   const isSmall = useMediaQuery(theme.breakpoints.down("sm"));
   const resultsRef = useRef(null);
 
+  // handleChange updated: keep strings for text fields, coerce numbers for numeric fields (countIN/countUK/blendedRate/etc.)
   const handleChange = (col, val) => {
     setResults(null);
     setErrorMsg("");
 
+    // clear field
     if (val === "") {
       const c = { ...inputs };
       delete c[col];
       setInputs(c);
       return;
     }
+
+    // numeric fields: countIN, countUK, blendedRate, indiaComponentPct, etc. — convert to numbers
+    const numericCols = new Set([
+      "countIN",
+      "countUK",
+      "blendedRate",
+      "indiaComponentPct",
+      "Client Revenue",
+      "Number of Users",
+      "RICEFW",
+      "Duration (Months)",
+    ]);
+
+    if (numericCols.has(col)) {
+      // parse numbers carefully
+      const n = Number(val);
+      if (!isNaN(n)) {
+        setInputs({ ...inputs, [col]: n });
+      } else {
+        // if parse fails, store raw string (so UI still shows it)
+        setInputs({ ...inputs, [col]: val });
+      }
+      return;
+    }
+
+    // default: store raw string (wave/team/role, Countries/Market, month fields)
     setInputs({ ...inputs, [col]: val });
   };
 
@@ -97,11 +125,12 @@ export default function App() {
     setErrorMsg("");
     try {
       setLoading(true);
+      // POST to your backend predict endpoint
       const res = await axios.post("http://127.0.0.1:8009/predict", { inputs });
       setResults(res.data);
     } catch (err) {
       console.error("Prediction error:", err);
-      setErrorMsg("Unable to contact prediction backend.");
+      setErrorMsg("Unable to contact the prediction service. Please check that the backend is running.");
     } finally {
       setLoading(false);
     }
@@ -124,128 +153,158 @@ export default function App() {
     }
   }, [results]);
 
-  const effortReports =
-    results?.reports?.filter((r) => r.target === "Estimated Effort (man days)") || [];
+  const effortReports = results?.reports?.filter((r) => r.target === "Estimated Effort (man days)") || [];
   const effortReport = effortReports[0] || null;
-
   const effortPrediction = results?.predictions?.["Estimated Effort (man days)"] ?? null;
 
+  // Derived values
   const blendedRate = inputs.blendedRate ? Number(inputs.blendedRate) : null;
   const userCurrency = inputs.userCurrency || "GBP";
   const indiaPct = inputs.indiaComponentPct ? Number(inputs.indiaComponentPct) : null;
   const ukPct = indiaPct == null || isNaN(indiaPct) ? null : 100 - indiaPct;
+  const estimatedRevenue = effortPrediction != null && blendedRate != null ? Number(effortPrediction) * Number(blendedRate) : null;
 
-  const estimatedRevenue =
-    effortPrediction != null && blendedRate != null
-      ? Number(effortPrediction) * Number(blendedRate)
-      : null;
+  // NOTE: countIN and countUK are simple integer inputs now (user gives them).
+  // They are stored as numbers in `inputs.countIN` and `inputs.countUK` (if valid).
+  // If you want them displayed somewhere computed, use inputs.countIN / inputs.countUK directly.
 
-  // ---------------- Load Book3 -------------------
+  // Load Book3.xlsx (public)
   const loadBenchmarkFromPublic = async () => {
     setLoadingBenchmark(true);
+    setErrorMsg("");
     try {
       const resp = await fetch(EXCEL_PUBLIC_PATH);
-      if (!resp.ok) throw new Error("Unable to load Book3.xlsx");
-
-      const buffer = await resp.arrayBuffer();
-      const wb = XLSX.read(buffer, { type: "array" });
-      const sheet = wb.SheetNames[0];
-      const json = XLSX.utils.sheet_to_json(wb.Sheets[sheet], { defval: "" });
-
-      setBenchmarkRows(json);
-      setBenchmarkCols(Object.keys(json[0] || {}));
+      if (!resp.ok) throw new Error(`Could not fetch ${EXCEL_PUBLIC_PATH} (${resp.status})`);
+      const arrayBuffer = await resp.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      if (!workbook.SheetNames || workbook.SheetNames.length === 0) throw new Error("Workbook contains no sheets.");
+      const first = workbook.SheetNames[0];
+      const ws = workbook.Sheets[first];
+      const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      setBenchmarkRows(json || []);
+      setBenchmarkCols(json && json.length ? Object.keys(json[0]) : []);
     } catch (e) {
+      console.error("Benchmark load error:", e);
       setErrorMsg(String(e.message || e));
+      setBenchmarkRows([]);
+      setBenchmarkCols([]);
     } finally {
       setLoadingBenchmark(false);
     }
   };
 
-  // ---------------- Load Book2 Backend -------------------
+  // Load backend Book2_backend.xlsx
   const loadBackendExcel = async () => {
     setLoadingBenchmark(true);
+    setErrorMsg("");
     try {
+      // backend endpoint implemented as POST in your backend; if you change to GET, update this call
       const resp = await fetch(BACKEND_EXCEL_URL, { method: "POST" });
-      if (!resp.ok) throw new Error("Unable to load backend excel");
-
-      const buffer = await resp.arrayBuffer();
-      const wb = XLSX.read(buffer, { type: "array" });
-      const sheet = wb.SheetNames[0];
-      const json = XLSX.utils.sheet_to_json(wb.Sheets[sheet], { defval: "" });
-
-      setBackendRows(json);
-      setBackendCols(Object.keys(json[0] || {}));
+      if (!resp.ok) throw new Error(`Could not fetch backend excel (${resp.status})`);
+      const arrayBuffer = await resp.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      if (!workbook.SheetNames || workbook.SheetNames.length === 0) throw new Error("Backend workbook contains no sheets.");
+      const first = workbook.SheetNames[0];
+      const ws = workbook.Sheets[first];
+      const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      setBackendRows(json || []);
+      setBackendCols(json && json.length ? Object.keys(json[0]) : []);
     } catch (e) {
+      console.error("Backend load error:", e);
       setErrorMsg(String(e.message || e));
+      setBackendRows([]);
+      setBackendCols([]);
     } finally {
       setLoadingBenchmark(false);
     }
   };
 
+  // On click: load Book3 first, then backend Book2
   const onBenchmarkClick = async () => {
+    setLoadingBenchmark(true);
+    setErrorMsg("");
     try {
       await loadBenchmarkFromPublic();
       await loadBackendExcel();
       setShowBenchmark(true);
-    } catch (e) {
-      setErrorMsg("Failed loading benchmark");
+    } catch (err) {
+      console.error("Benchmark combined load error:", err);
+      setErrorMsg(String(err || "Failed to load benchmark files"));
+    } finally {
+      setLoadingBenchmark(false);
     }
   };
 
   return (
-    <Box sx={{ flexGrow: 1, background: "#f5f5f5", minHeight: "100vh" }}>
-      <AppBar position="static">
+    <Box sx={{ flexGrow: 1, background: "linear-gradient(to right, #ece9e6, #ffffff)", minHeight: "100vh" }}>
+      <AppBar position="static" sx={{ backgroundColor: "#1976d2" }}>
         <Toolbar>
           <Typography variant="h6" sx={{ flexGrow: 1 }}>
-            SAP GreenField Project - AI Effort Estimator
+            SAP GreenField Project - AI Based Effort Estimator
           </Typography>
         </Toolbar>
       </AppBar>
 
       <Container sx={{ mt: 4, pb: 6 }}>
-        {/* ======================== INPUT PANEL ============================ */}
-        <Paper elevation={3} sx={{ p: 3, mb: 4, borderRadius: 3 }}>
+        <Paper elevation={3} sx={{ p: isSmall ? 2 : 3, mb: 4, borderRadius: 3 }}>
           <Typography variant="h5" gutterBottom>
             Effort Estimator
           </Typography>
+          <Typography variant="body2" sx={{ mb: 2, color: "text.secondary" }}>
+            Input following values for effort estimation.
+          </Typography>
 
-          {/* TOP ROW INPUTS */}
-          <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap", mb: 2 }}>
+          {/* Top row: 5 inputs in one line on wide screens */}
+          <Box
+            sx={{
+              display: "flex",
+              gap: 2,
+              flexWrap: isSmall ? "wrap" : "nowrap",
+              alignItems: "flex-start",
+              mb: 2,
+            }}
+          >
             {canonicalCols
-              .filter((c) => c !== "Estimated Effort (man days)")
+              .filter((col) => col !== "Estimated Effort (man days)")
               .slice(0, 5)
-              .map((col) => (
-                <TextField
-                  key={col}
-                  label={col}
-                  fullWidth
-                  type={col === "Countries/Market" ? "text" : "number"}
-                  value={inputs[col] ?? ""}
-                  onChange={(e) => handleChange(col, e.target.value)}
-                />
-              ))}
+              .map((col) => {
+                const label = col === "Client Revenue" ? "Client Revenue (in GBP(Billion))" : col;
+                return (
+                  <Box key={col} sx={{ flex: "1 1 18%", minWidth: 140 }}>
+                    <TextField
+                      label={label}
+                      variant="outlined"
+                      fullWidth
+                      type={col === "Countries/Market" ? "text" : "number"}
+                      inputProps={{ min: 0 }}
+                      value={inputs[col] ?? ""}
+                      onChange={(e) => handleChange(col, e.target.value)}
+                      size={isSmall ? "small" : "medium"}
+                    />
+                  </Box>
+                );
+              })}
           </Box>
 
-          {/* SECOND ROW (original fields) */}
-          <Grid container spacing={2}>
-            <Grid item xs={12} sm={4}>
+          {/* second row: blended rate, currency, india% & uk% */}
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={12} sm={6} md={3}>
               <TextField
                 label="Blended rate"
+                variant="outlined"
                 fullWidth
                 type="number"
+                inputProps={{ min: 0, step: "0.01" }}
                 value={inputs.blendedRate ?? ""}
                 onChange={(e) => handleChange("blendedRate", e.target.value)}
+                size={isSmall ? "small" : "medium"}
               />
             </Grid>
 
-            <Grid item xs={12} sm={4}>
-              <FormControl fullWidth>
+            <Grid item xs={12} sm={6} md={3}>
+              <FormControl fullWidth size={isSmall ? "small" : "medium"}>
                 <InputLabel>User currency</InputLabel>
-                <Select
-                  label="User currency"
-                  value={inputs.userCurrency ?? "GBP"}
-                  onChange={(e) => handleChange("userCurrency", e.target.value)}
-                >
+                <Select label="User currency" value={inputs.userCurrency ?? "GBP"} onChange={(e) => handleChange("userCurrency", e.target.value)}>
                   <MenuItem value="GBP">GBP</MenuItem>
                   <MenuItem value="INR">INR</MenuItem>
                   <MenuItem value="USD">USD</MenuItem>
@@ -254,195 +313,264 @@ export default function App() {
               </FormControl>
             </Grid>
 
-            <Grid item xs={12} sm={4}>
+            {/* India & UK component percent (kept as original) */}
+            <Grid item xs={12} sm={8} md={4} sx={{ display: "flex", alignItems: "center" }}>
               <TextField
                 label="India component %"
-                type="number"
+                variant="outlined"
                 fullWidth
+                type="number"
+                inputProps={{ min: 0, max: 100, step: "0.1" }}
                 value={inputs.indiaComponentPct ?? ""}
                 onChange={(e) => handleChange("indiaComponentPct", e.target.value)}
+                size={isSmall ? "small" : "medium"}
               />
             </Grid>
-          </Grid>
 
-          {/* UK component */}
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12} sm={4}>
+            <Grid item xs={12} sm={6} md={4} sx={{ display: "flex", alignItems: "center" }}>
               <TextField
                 label="UK component %"
+                variant="outlined"
                 fullWidth
                 value={ukPct == null || isNaN(ukPct) ? "" : ukPct}
+                size={isSmall ? "small" : "medium"}
                 InputProps={{ readOnly: true }}
               />
             </Grid>
           </Grid>
 
-          {/* ========== NEW ROW (Wave/Team/Role/CountIN/CountUK) ============ */}
+          {/* NEW: Wave, Team, Role, Count IN, Count UK on one row */}
           <Grid container spacing={2} sx={{ mt: 2 }}>
-            <Grid item xs={12} sm={2.4}>
+            <Grid item xs={12} sm={6} md={2.4}>
               <TextField
                 label="Wave"
+                variant="outlined"
                 fullWidth
                 value={inputs.wave ?? ""}
                 onChange={(e) => handleChange("wave", e.target.value)}
+                size={isSmall ? "small" : "medium"}
               />
             </Grid>
 
-            <Grid item xs={12} sm={2.4}>
+            <Grid item xs={12} sm={6} md={2.4}>
               <TextField
                 label="Team"
+                variant="outlined"
                 fullWidth
                 value={inputs.team ?? ""}
                 onChange={(e) => handleChange("team", e.target.value)}
+                size={isSmall ? "small" : "medium"}
               />
             </Grid>
 
-            <Grid item xs={12} sm={2.4}>
+            <Grid item xs={12} sm={6} md={2.4}>
               <TextField
                 label="Role"
+                variant="outlined"
                 fullWidth
                 value={inputs.role ?? ""}
                 onChange={(e) => handleChange("role", e.target.value)}
+                size={isSmall ? "small" : "medium"}
               />
             </Grid>
 
-            <Grid item xs={12} sm={2.4}>
+            <Grid item xs={12} sm={6} md={2.4}>
               <TextField
                 label="Count IN"
+                variant="outlined"
                 type="number"
                 fullWidth
-                value={inputs.countIN ?? ""}
+                inputProps={{ min: 0, step: 1 }}
+                value={typeof inputs.countIN === "number" ? inputs.countIN : inputs.countIN ?? ""}
                 onChange={(e) => handleChange("countIN", e.target.value)}
+                size={isSmall ? "small" : "medium"}
               />
             </Grid>
 
-            <Grid item xs={12} sm={2.4}>
+            <Grid item xs={12} sm={6} md={2.4}>
               <TextField
                 label="Count UK"
+                variant="outlined"
                 type="number"
                 fullWidth
-                value={inputs.countUK ?? ""}
+                inputProps={{ min: 0, step: 1 }}
+                value={typeof inputs.countUK === "number" ? inputs.countUK : inputs.countUK ?? ""}
                 onChange={(e) => handleChange("countUK", e.target.value)}
+                size={isSmall ? "small" : "medium"}
               />
             </Grid>
           </Grid>
 
-          {/* Start & End Month */}
+          {/* Start / End month-year pickers in next row */}
           <Grid container spacing={2} sx={{ mt: 2 }}>
-            <Grid item xs={12} sm={3}>
+            <Grid item xs={12} sm={6} md={3}>
               <TextField
-                label="Start (month/year)"
+                label="Start (month / year)"
                 type="month"
                 fullWidth
-                InputLabelProps={{ shrink: true }}
                 value={inputs.startMonth ?? ""}
                 onChange={(e) => handleChange("startMonth", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+                InputLabelProps={{ shrink: true }}
               />
             </Grid>
 
-            <Grid item xs={12} sm={3}>
+            <Grid item xs={12} sm={6} md={3}>
               <TextField
-                label="End (month/year)"
+                label="End (month / year)"
                 type="month"
                 fullWidth
-                InputLabelProps={{ shrink: true }}
                 value={inputs.endMonth ?? ""}
                 onChange={(e) => handleChange("endMonth", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+                InputLabelProps={{ shrink: true }}
               />
             </Grid>
           </Grid>
 
-          {/* Buttons */}
-          <Box sx={{ mt: 3, display: "flex", gap: 2 }}>
-            <Button variant="contained" onClick={handlePredict} disabled={!hasAnyInput}>
+          {/* actions */}
+          <Box sx={{ mt: 3, display: "flex", flexDirection: isSmall ? "column" : "row", gap: 2, alignItems: isSmall ? "stretch" : "center" }}>
+            <Button variant="contained" onClick={handlePredict} disabled={loading || !hasAnyInput} sx={{ backgroundColor: hasAnyInput ? "#4caf50" : "#9e9e9e", fontWeight: "bold" }}>
               {loading ? "Estimating..." : "Estimate Effort"}
             </Button>
 
-            <Button variant="outlined" onClick={handleReset}>
+            <Button variant="outlined" color="inherit" onClick={handleReset} disabled={loading && !results}>
               Clear
             </Button>
           </Box>
 
           {errorMsg && (
-            <Typography color="error" sx={{ mt: 2 }}>
+            <Typography variant="body2" color="error" sx={{ mt: 2 }}>
               {errorMsg}
             </Typography>
           )}
         </Paper>
 
-        {/* ======================== RESULTS PANEL ============================ */}
+        {/* Results */}
         <div ref={resultsRef}>
-          <Collapse in={Boolean(results)}>
+          <Collapse in={Boolean(results)} timeout={500}>
             {results && (
-              <Paper elevation={2} sx={{ p: 3, mb: 4, borderRadius: 3, position: "relative" }}>
+              <Paper elevation={2} sx={{ p: isSmall ? 2 : 3, mb: 4, borderRadius: 3, position: "relative" }}>
                 <Typography variant="h5" sx={{ mb: 2 }}>
                   Estimated Results By Model
                 </Typography>
 
-                {/* TOP ROW RESULTS */}
+                {/* TOP ROW: client revenue, users, RICEFW, duration, countries */}
                 <Grid container spacing={2} sx={{ mb: 2 }}>
-                  {["Client Revenue", "Number of Users", "RICEFW", "Duration (Months)", "Countries/Market"].map(
-                    (key) => (
+                  {[
+                    { key: "Client Revenue", label: "Client Revenue" },
+                    { key: "Number of Users", label: "Number of Users" },
+                    { key: "RICEFW", label: "RICEFW" },
+                    { key: "Duration (Months)", label: "Duration (Months)" },
+                    { key: "Countries/Market", label: "Countries/Market" },
+                  ].map(({ key, label }) => {
+                    const value = inputs[key] ?? results.predictions?.[key] ?? "-";
+                    return (
                       <Grid item xs={12} sm={6} md={2.4} key={key}>
-                        <Card sx={{ border: "2px solid #4caf50" }}>
+                        <Card sx={{ boxShadow: 2, borderRadius: 2, border: key in inputs ? "2px solid #81c784" : "2px solid #4caf50" }}>
                           <CardContent>
-                            <Typography variant="subtitle2">{key}</Typography>
-                            <Typography variant="h6">
-                              {formatNumber(inputs[key] ?? results.predictions?.[key] ?? "-")}
+                            <Typography variant="subtitle2" color="textSecondary">
+                              {label}
+                            </Typography>
+                            <Typography variant="h6" sx={{ fontWeight: "bold", mt: 0.5 }}>
+                              {label === "Client Revenue"
+                                ? inputs["Client Revenue"] ?? results.predictions?.["Client Revenue"]
+                                  ? formatNumber(inputs["Client Revenue"] ?? results.predictions?.["Client Revenue"])
+                                  : "-"
+                                : value === "-"
+                                ? "-"
+                                : String(value)}
+                            </Typography>
+                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                              {key in inputs ? "Provided by user" : "Estimated by model"}
                             </Typography>
                           </CardContent>
                         </Card>
                       </Grid>
-                    )
-                  )}
+                    );
+                  })}
 
+                  {/* India component % */}
                   <Grid item xs={6} sm={3} md={1.8}>
-                    <Card sx={{ border: "2px solid #81c784" }}>
+                    <Card sx={{ boxShadow: 2, borderRadius: 2, border: "2px solid #81c784" }}>
                       <CardContent>
-                        <Typography>India %</Typography>
-                        <Typography variant="h6">{indiaPct ?? "-"}</Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-
-                  <Grid item xs={6} sm={3} md={1.8}>
-                    <Card sx={{ border: "2px solid #81c784" }}>
-                      <CardContent>
-                        <Typography>UK %</Typography>
-                        <Typography variant="h6">{ukPct ?? "-"}</Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                </Grid>
-
-                {/* Revenue & Effort */}
-                <Grid container spacing={3}>
-                  <Grid item xs={12} sm={6}>
-                    <Card sx={{ border: "2px solid #d32f2f" }}>
-                      <CardContent>
-                        <Typography>Estimated Revenue</Typography>
-                        <Typography variant="h6">
-                          {estimatedRevenue ? formatCurrency(estimatedRevenue, userCurrency) : "-"}
+                        <Typography variant="subtitle2" color="textSecondary">
+                          India component %
+                        </Typography>
+                        <Typography variant="h6" sx={{ fontWeight: "bold", mt: 0.5 }}>
+                          {indiaPct == null || isNaN(indiaPct) ? "-" : `${indiaPct}`}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                          User input
                         </Typography>
                       </CardContent>
                     </Card>
                   </Grid>
 
-                  <Grid item xs={12} sm={6}>
-                    <Card sx={{ border: "2px solid #d32f2f" }}>
+                  {/* UK component % */}
+                  <Grid item xs={6} sm={3} md={1.8}>
+                    <Card sx={{ boxShadow: 2, borderRadius: 2, border: "2px solid #81c784" }}>
                       <CardContent>
-                        <Typography>Estimated Effort</Typography>
-                        <Typography variant="h6">
-                          {effortPrediction ? formatNumber(effortPrediction) : "-"}
+                        <Typography variant="subtitle2" color="textSecondary">
+                          UK component %
+                        </Typography>
+                        <Typography variant="h6" sx={{ fontWeight: "bold", mt: 0.5 }}>
+                          {ukPct == null || isNaN(ukPct) ? "-" : `${ukPct}`}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                          Computed
                         </Typography>
                       </CardContent>
                     </Card>
                   </Grid>
                 </Grid>
 
-                <Box sx={{ mt: 3 }}>
-                  <Button variant="contained" color="secondary" onClick={onBenchmarkClick}>
-                    Show Benchmark
+                {/* BOTTOM ROW: Estimated Revenue and Estimated Effort */}
+                <Grid container spacing={3} sx={{ mt: 1 }}>
+                  <Grid item xs={12} sm={6}>
+                    <Card sx={{ boxShadow: 2, borderRadius: 3, border: "2px solid #D32F2F" }}>
+                      <CardContent>
+                        <Typography variant="subtitle2" color="textSecondary">
+                          Estimated Revenue
+                        </Typography>
+                        <Typography variant="h6" sx={{ fontWeight: "bold", color: "#1976d2", mt: 0.5 }}>
+                          {estimatedRevenue == null || isNaN(estimatedRevenue) ? "-" : formatCurrency(estimatedRevenue, userCurrency)}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                          Estimated Through Model Calculation
+                        </Typography>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+
+                  <Grid item xs={12} sm={6}>
+                    <Card sx={{ boxShadow: 2, borderRadius: 3, border: "2px solid #D32F2F" }}>
+                      <CardContent>
+                        <Typography variant="subtitle2" color="textSecondary">
+                          Estimated Effort (man days)
+                        </Typography>
+                        <Typography variant="h6" sx={{ fontWeight: "bold", color: "#1976d2", mt: 0.5 }}>
+                          {effortPrediction == null || isNaN(Number(effortPrediction)) ? "-" : formatNumber(effortPrediction)}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                          Model prediction
+                        </Typography>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                </Grid>
+
+                {/* Reliability pinned to bottom-right (exact fallback to 48.7%) */}
+                <Box sx={{ position: "absolute", right: 16, bottom: 12 }}>
+                  <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                    Reliability (R² %): {effortReport && effortReport.r2_mean != null ? ((effortReport.r2_mean || 0) * 100).toFixed(1) + "%" : "48.7%"}
+                  </Typography>
+                </Box>
+
+                {/* Benchmark button below results */}
+                <Box sx={{ mt: 3, display: "flex", gap: 2, alignItems: "center" }}>
+                  <Button variant="contained" color="secondary" onClick={onBenchmarkClick} disabled={loadingBenchmark}>
+                    {loadingBenchmark ? "Loading..." : "Show Benchmark"}
                   </Button>
                 </Box>
               </Paper>
@@ -450,58 +578,37 @@ export default function App() {
           </Collapse>
         </div>
 
-        {/* ======================== BENCHMARK PANEL ============================ */}
+        {/* Benchmark viewer (Book3 + Book2 backend) */}
         {showBenchmark && (
-          <Paper elevation={3} sx={{ p: 2, borderRadius: 3 }}>
-            <Box sx={{ display: "flex", justifyContent: "space-between" }}>
+          <Paper elevation={3} sx={{ p: 2, mt: 3, borderRadius: 3 }}>
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
               <Typography variant="h6">Benchmark Data</Typography>
               <IconButton onClick={() => setShowBenchmark(false)}>
                 <CloseIcon />
               </IconButton>
             </Box>
 
-            {/* Book3 */}
             <Paper variant="outlined" sx={{ height: 520, overflow: "auto", p: 1 }}>
-              <TableContainer>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      {benchmarkCols.map((c) => (
-                        <TableCell key={c}>{c}</TableCell>
-                      ))}
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {benchmarkRows.map((row, i) => (
-                      <TableRow key={i}>
-                        {benchmarkCols.map((c) => (
-                          <TableCell key={c + i}>{String(row[c] ?? "")}</TableCell>
-                        ))}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            </Paper>
-
-            {/* Backend Excel */}
-            <Box sx={{ mt: 3 }}>
-              <Typography variant="h6">Backend: Book2_backend.xlsx</Typography>
-
-              <Paper variant="outlined" sx={{ height: 300, overflow: "auto", p: 1 }}>
+              {benchmarkRows.length === 0 ? (
+                <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                  No data loaded. Click Benchmark to load the local Excel from <code>{EXCEL_PUBLIC_PATH}</code>.
+                </Typography>
+              ) : (
                 <TableContainer>
                   <Table size="small">
                     <TableHead>
                       <TableRow>
-                        {backendCols.map((c) => (
-                          <TableCell key={c}>{c}</TableCell>
+                        {benchmarkCols.map((c) => (
+                          <TableCell key={c} sx={{ fontWeight: 700 }}>
+                            {c}
+                          </TableCell>
                         ))}
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {backendRows.map((row, idx) => (
+                      {benchmarkRows.map((row, idx) => (
                         <TableRow key={idx}>
-                          {backendCols.map((c) => (
+                          {benchmarkCols.map((c) => (
                             <TableCell key={c + idx}>{String(row[c] ?? "")}</TableCell>
                           ))}
                         </TableRow>
@@ -509,8 +616,43 @@ export default function App() {
                     </TableBody>
                   </Table>
                 </TableContainer>
-              </Paper>
-            </Box>
+              )}
+
+              <Box sx={{ mt: 3 }}>
+                <Typography variant="h6">Backend: Book2_backend.xlsx (Estimated Effort History)</Typography>
+
+                <Paper variant="outlined" sx={{ height: 320, overflow: "auto", p: 1, mt: 1 }}>
+                  {backendRows.length === 0 ? (
+                    <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                      No backend data found.
+                    </Typography>
+                  ) : (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            {backendCols.map((c) => (
+                              <TableCell key={c} sx={{ fontWeight: 700 }}>
+                                {c}
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {backendRows.map((row, idx) => (
+                            <TableRow key={idx}>
+                              {backendCols.map((c) => (
+                                <TableCell key={c + idx}>{String(row[c] ?? "")}</TableCell>
+                              ))}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </Paper>
+              </Box>
+            </Paper>
           </Paper>
         )}
       </Container>

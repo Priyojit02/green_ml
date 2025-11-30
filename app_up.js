@@ -61,6 +61,7 @@ export default function App() {
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+
   const [showBenchmark, setShowBenchmark] = useState(false);
 
   // Book3 (public)
@@ -80,11 +81,14 @@ export default function App() {
   const handleChange = (col, val) => {
     setResults(null);
     setErrorMsg("");
+    // keep raw value (string) — backend will coerce if needed
     if (val === "") {
       const c = { ...inputs };
       delete c[col];
       setInputs(c);
-    } else setInputs({ ...inputs, [col]: val });
+    } else {
+      setInputs({ ...inputs, [col]: val });
+    }
   };
 
   const hasAnyInput = Object.keys(inputs).length > 0;
@@ -93,6 +97,7 @@ export default function App() {
     setErrorMsg("");
     try {
       setLoading(true);
+      // POST to your backend predict endpoint
       const res = await axios.post("http://127.0.0.1:8009/predict", { inputs });
       setResults(res.data);
     } catch (err) {
@@ -124,12 +129,16 @@ export default function App() {
   const effortReport = effortReports[0] || null;
   const effortPrediction = results?.predictions?.["Estimated Effort (man days)"] ?? null;
 
-  // Derived
+  // Derived values
   const blendedRate = inputs.blendedRate ? Number(inputs.blendedRate) : null;
   const userCurrency = inputs.userCurrency || "GBP";
   const indiaPct = inputs.indiaComponentPct ? Number(inputs.indiaComponentPct) : null;
   const ukPct = indiaPct == null || isNaN(indiaPct) ? null : 100 - indiaPct;
   const estimatedRevenue = effortPrediction != null && blendedRate != null ? Number(effortPrediction) * Number(blendedRate) : null;
+
+  // Count UK computed (100 - Count IN)
+  const countINval = inputs.countIN === undefined || inputs.countIN === "" ? null : Number(inputs.countIN);
+  const countUKval = countINval === null || isNaN(countINval) ? "" : Math.abs(100 - countINval);
 
   // Load Book3.xlsx (public)
   const loadBenchmarkFromPublic = async () => {
@@ -161,7 +170,7 @@ export default function App() {
     setLoadingBenchmark(true);
     setErrorMsg("");
     try {
-      // backend endpoint implemented as POST in your backend; if GET, change method
+      // backend endpoint implemented as POST in your backend; if you change to GET, update this call
       const resp = await fetch(BACKEND_EXCEL_URL, { method: "POST" });
       if (!resp.ok) throw new Error(`Could not fetch backend excel (${resp.status})`);
       const arrayBuffer = await resp.arrayBuffer();
@@ -249,7 +258,7 @@ export default function App() {
               })}
           </Box>
 
-          {/* second row */}
+          {/* second row: blended rate, currency, india% & uk% */}
           <Grid container spacing={2} sx={{ mt: 1 }}>
             <Grid item xs={12} sm={6} md={3}>
               <TextField
@@ -267,11 +276,7 @@ export default function App() {
             <Grid item xs={12} sm={6} md={3}>
               <FormControl fullWidth size={isSmall ? "small" : "medium"}>
                 <InputLabel>User currency</InputLabel>
-                <Select
-                  label="User currency"
-                  value={inputs.userCurrency ?? "GBP"}
-                  onChange={(e) => handleChange("userCurrency", e.target.value)}
-                >
+                <Select label="User currency" value={inputs.userCurrency ?? "GBP"} onChange={(e) => handleChange("userCurrency", e.target.value)}>
                   <MenuItem value="GBP">GBP</MenuItem>
                   <MenuItem value="INR">INR</MenuItem>
                   <MenuItem value="USD">USD</MenuItem>
@@ -280,116 +285,122 @@ export default function App() {
               </FormControl>
             </Grid>
 
-            {/* New fields row: Wave / Team / Role / Count IN / Count UK */}
-            <Grid item xs={12} sm={12} md={6}>
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={6} md={6}>
-                  <TextField
-                    label="Wave"
-                    variant="outlined"
-                    fullWidth
-                    value={inputs.wave ?? ""}
-                    onChange={(e) => handleChange("wave", e.target.value)}
-                    size={isSmall ? "small" : "medium"}
-                  />
-                </Grid>
-
-                <Grid item xs={12} sm={6} md={6}>
-                  <TextField
-                    label="Team"
-                    variant="outlined"
-                    fullWidth
-                    value={inputs.team ?? ""}
-                    onChange={(e) => handleChange("team", e.target.value)}
-                    size={isSmall ? "small" : "medium"}
-                  />
-                </Grid>
-
-                <Grid item xs={12} sm={6} md={6}>
-                  <TextField
-                    label="Role"
-                    variant="outlined"
-                    fullWidth
-                    value={inputs.role ?? ""}
-                    onChange={(e) => handleChange("role", e.target.value)}
-                    size={isSmall ? "small" : "medium"}
-                  />
-                </Grid>
-
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    label="Count IN"
-                    variant="outlined"
-                    fullWidth
-                    type="number"
-                    inputProps={{ min: 0 }}
-                    value={inputs.countIN ?? ""}
-                    onChange={(e) => handleChange("countIN", e.target.value)}
-                    size={isSmall ? "small" : "medium"}
-                  />
-                </Grid>
-
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    label="Count UK"
-                    variant="outlined"
-                    fullWidth
-                    type="number"
-                    inputProps={{ min: 0 }}
-                    value={inputs.countUK ?? ""}
-                    onChange={(e) => handleChange("countUK", e.target.value)}
-                    size={isSmall ? "small" : "medium"}
-                  />
-                </Grid>
-              </Grid>
+            {/* India & UK component percent (kept as original) */}
+            <Grid item xs={12} sm={8} md={4} sx={{ display: "flex", alignItems: "center" }}>
+              <TextField
+                label="India component %"
+                variant="outlined"
+                fullWidth
+                type="number"
+                inputProps={{ min: 0, max: 100, step: "0.1" }}
+                value={inputs.indiaComponentPct ?? ""}
+                onChange={(e) => handleChange("indiaComponentPct", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+              />
             </Grid>
 
-            {/* Start / End month-year pickers */}
-            <Grid item xs={12} sm={12} md={6}>
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={6} md={6}>
-                  <TextField
-                    label="Start (month / year)"
-                    type="month"
-                    fullWidth
-                    value={inputs.startMonth ?? ""}
-                    onChange={(e) => handleChange("startMonth", e.target.value)}
-                    size={isSmall ? "small" : "medium"}
-                    InputLabelProps={{ shrink: true }}
-                  />
-                </Grid>
+            <Grid item xs={12} sm={6} md={4} sx={{ display: "flex", alignItems: "center" }}>
+              <TextField
+                label="UK component %"
+                variant="outlined"
+                fullWidth
+                value={ukPct == null || isNaN(ukPct) ? "" : ukPct}
+                size={isSmall ? "small" : "medium"}
+                InputProps={{ readOnly: true }}
+              />
+            </Grid>
+          </Grid>
 
-                <Grid item xs={12} sm={6} md={6}>
-                  <TextField
-                    label="End (month / year)"
-                    type="month"
-                    fullWidth
-                    value={inputs.endMonth ?? ""}
-                    onChange={(e) => handleChange("endMonth", e.target.value)}
-                    size={isSmall ? "small" : "medium"}
-                    InputLabelProps={{ shrink: true }}
-                  />
-                </Grid>
-              </Grid>
+          {/* NEW: Wave, Team, Role, Count IN, Count UK on one row */}
+          <Grid container spacing={2} sx={{ mt: 2 }}>
+            <Grid item xs={12} sm={6} md={2.4}>
+              <TextField
+                label="Wave"
+                variant="outlined"
+                fullWidth
+                value={inputs.wave ?? ""}
+                onChange={(e) => handleChange("wave", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={6} md={2.4}>
+              <TextField
+                label="Team"
+                variant="outlined"
+                fullWidth
+                value={inputs.team ?? ""}
+                onChange={(e) => handleChange("team", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={6} md={2.4}>
+              <TextField
+                label="Role"
+                variant="outlined"
+                fullWidth
+                value={inputs.role ?? ""}
+                onChange={(e) => handleChange("role", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={6} md={2.4}>
+              <TextField
+                label="Count IN (%)"
+                variant="outlined"
+                type="number"
+                fullWidth
+                inputProps={{ min: 0, max: 100 }}
+                value={inputs.countIN ?? ""}
+                onChange={(e) => handleChange("countIN", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={6} md={2.4}>
+              <TextField
+                label="Count UK (%)"
+                variant="outlined"
+                fullWidth
+                value={countUKval === "" ? "" : String(countUKval)}
+                InputProps={{ readOnly: true }}
+                size={isSmall ? "small" : "medium"}
+              />
+            </Grid>
+          </Grid>
+
+          {/* Start / End month-year pickers in next row */}
+          <Grid container spacing={2} sx={{ mt: 2 }}>
+            <Grid item xs={12} sm={6} md={3}>
+              <TextField
+                label="Start (month / year)"
+                type="month"
+                fullWidth
+                value={inputs.startMonth ?? ""}
+                onChange={(e) => handleChange("startMonth", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={6} md={3}>
+              <TextField
+                label="End (month / year)"
+                type="month"
+                fullWidth
+                value={inputs.endMonth ?? ""}
+                onChange={(e) => handleChange("endMonth", e.target.value)}
+                size={isSmall ? "small" : "medium"}
+                InputLabelProps={{ shrink: true }}
+              />
             </Grid>
           </Grid>
 
           {/* actions */}
-          <Box
-            sx={{
-              mt: 3,
-              display: "flex",
-              flexDirection: isSmall ? "column" : "row",
-              gap: 2,
-              alignItems: isSmall ? "stretch" : "center",
-            }}
-          >
-            <Button
-              variant="contained"
-              onClick={handlePredict}
-              disabled={loading || !hasAnyInput}
-              sx={{ backgroundColor: hasAnyInput ? "#4caf50" : "#9e9e9e", fontWeight: "bold" }}
-            >
+          <Box sx={{ mt: 3, display: "flex", flexDirection: isSmall ? "column" : "row", gap: 2, alignItems: isSmall ? "stretch" : "center" }}>
+            <Button variant="contained" onClick={handlePredict} disabled={loading || !hasAnyInput} sx={{ backgroundColor: hasAnyInput ? "#4caf50" : "#9e9e9e", fontWeight: "bold" }}>
               {loading ? "Estimating..." : "Estimate Effort"}
             </Button>
 
@@ -414,7 +425,7 @@ export default function App() {
                   Estimated Results By Model
                 </Typography>
 
-                {/* TOP ROW */}
+                {/* TOP ROW: client revenue, users, RICEFW, duration, countries */}
                 <Grid container spacing={2} sx={{ mb: 2 }}>
                   {[
                     { key: "Client Revenue", label: "Client Revenue" },
@@ -449,7 +460,7 @@ export default function App() {
                     );
                   })}
 
-                  {/* India and UK % */}
+                  {/* India component % */}
                   <Grid item xs={6} sm={3} md={1.8}>
                     <Card sx={{ boxShadow: 2, borderRadius: 2, border: "2px solid #81c784" }}>
                       <CardContent>
@@ -466,6 +477,7 @@ export default function App() {
                     </Card>
                   </Grid>
 
+                  {/* UK component % */}
                   <Grid item xs={6} sm={3} md={1.8}>
                     <Card sx={{ boxShadow: 2, borderRadius: 2, border: "2px solid #81c784" }}>
                       <CardContent>
@@ -518,13 +530,14 @@ export default function App() {
                   </Grid>
                 </Grid>
 
+                {/* Reliability pinned to bottom-right (exact fallback to 48.7%) */}
                 <Box sx={{ position: "absolute", right: 16, bottom: 12 }}>
                   <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                    Reliability (R² %):{" "}
-                    {effortReport && effortReport.r2_mean != null ? ((effortReport.r2_mean || 0) * 100).toFixed(1) + "%" : "48.7%"}
+                    Reliability (R² %): {effortReport && effortReport.r2_mean != null ? ((effortReport.r2_mean || 0) * 100).toFixed(1) + "%" : "48.7%"}
                   </Typography>
                 </Box>
 
+                {/* Benchmark button below results */}
                 <Box sx={{ mt: 3, display: "flex", gap: 2, alignItems: "center" }}>
                   <Button variant="contained" color="secondary" onClick={onBenchmarkClick} disabled={loadingBenchmark}>
                     {loadingBenchmark ? "Loading..." : "Show Benchmark"}
@@ -535,15 +548,12 @@ export default function App() {
           </Collapse>
         </div>
 
+        {/* Benchmark viewer (Book3 + Book2 backend) */}
         {showBenchmark && (
           <Paper elevation={3} sx={{ p: 2, mt: 3, borderRadius: 3 }}>
             <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
               <Typography variant="h6">Benchmark Data</Typography>
-              <IconButton
-                onClick={() => {
-                  setShowBenchmark(false);
-                }}
-              >
+              <IconButton onClick={() => setShowBenchmark(false)}>
                 <CloseIcon />
               </IconButton>
             </Box>
@@ -580,6 +590,7 @@ export default function App() {
 
               <Box sx={{ mt: 3 }}>
                 <Typography variant="h6">Backend: Book2_backend.xlsx (Estimated Effort History)</Typography>
+
                 <Paper variant="outlined" sx={{ height: 320, overflow: "auto", p: 1, mt: 1 }}>
                   {backendRows.length === 0 ? (
                     <Typography variant="body2" sx={{ color: "text.secondary" }}>
